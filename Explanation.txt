@@ -1,0 +1,431 @@
+This is the output of running ./example
+
+Reading the April 1999 IEEE/ACM Transactions on Networking paper
+on Consistent Overhead Byte Stuffing will aid understanding
+the explanations that follow.
+
+<http://www.stuartcheshire.org/#Pubs>
+
+The examples demonstrate how various kinds of data are encoded:
+1. data containing no zeroes
+2. data ending in a zero
+3. data with a zero in the middle
+4. data beginning with a zero, and
+5. data with a run of zeroes.
+
+The intent is to illustrate how different kinds of data are encoded;
+it should be clear how these examples generalize to encoding any data.
+
+The set of five different example data patterns is encoded and
+decoded using four different coding styles, to illustrate the
+different modes supported by the API:
+
+1. One-shot encoding and decoding:
+   Given the test block of data, it is encoded to wire-format en masse
+   with a single "COBSEncode" call, then decoded back to message form
+   with a single "COBSDecode" call.
+
+2. Pipeline encoding:
+   Data is handed to "COBSEncode" one byte at a time.
+   For each byte provided, "COBSEncode" may generate
+   zero, one, or two bytes of output data (but never more than two).
+   However, the routine may also go back and modify existing data
+   too, so care needs to be taken if you intend to use this mode
+   to allow message transmission to begin before the entire message
+   has been encoded (see example.c for how to code this correctly).
+
+3. Pipeline decoding 1:
+   Data is handed to "COBSDecode" one byte at a time,
+   like bytes arriving on a serial port.
+   For each byte handed to it, "COBSDecode" may yield
+   zero, one, or more bytes of decoded message data.
+
+4. Pipeline decoding 2:
+   Data is requested from "COBSDecode" just one byte at a time.
+   For each byte requested, "COBSDecode" may consume
+   zero, one, or two bytes of source data (but never more than two).
+
+Program output follows; output is quoted using '> ';
+explanatory text is not quoted.
+
+> One-shot encoding and decoding.
+> 
+> Initial data     : 41 42 43 44 45
+> Framed message   : 06 41 42 43 44 45 00
+> Decoded data     : 41 42 43 44 45
+
+Here the initial data was "ABCDE"
+A phantom zero is logically appended to the end of every message
+before encoding (see ToN paper if you want to know why), yielding "ABCDE\0"
+This encodes as 06 (meaning "five non-zero bytes plus trailing zero"),
+plus the actual five data bytes: 41 42 43 44 45
+Now we have: "06 41 42 43 44 45"
+Now the message is zero-free, so we can now unambiguously mark the end
+of the message with a zero, giving: "06 41 42 43 44 45 00"
+Upon decoding and discarding the final phantom zero,
+we (not surprisingly) recover the original message.
+
+--
+
+> Initial data     : 41 42 43 44 45 00
+> Framed message   : E5 41 42 43 44 45 00
+> Decoded data     : 41 42 43 44 45 00
+
+Here the data actually ends with a real 00.
+Appending the phantom zero yields: "41 42 43 44 45 00 00"
+This encodes as: "E5 (meaning five data bytes plus two zeroes) 41 42 43 44 45"
+Now the message is zero-free, so we can now unambiguously mark the end
+of the message with a zero, giving: "E5 41 42 43 44 45 00"
+Upon decoding, we (not surprisingly) recover the original message.
+
+--
+
+> Initial data     : 41 42 43 00 44 45
+> Framed message   : 04 41 42 43 03 44 45 00
+> Decoded data     : 41 42 43 00 44 45
+
+Here the data has a zero in the middle.
+"41 42 43 00" encodes as "04 (three data bytes plus zero) 41 42 43"
+"44 45 [phantom zero]" encodes as "03 (two data bytes plus zero) 44 45"
+
+--
+
+> Initial data     : 00 41 42 43 44 45
+> Framed message   : 01 06 41 42 43 44 45 00
+> Decoded data     : 00 41 42 43 44 45
+
+Here the data starts with a zero.
+"00" encodes as "01 (no data bytes, plus zero)"
+"41 42 43 44 45 [phantom zero]" encodes as
+"06 (five data bytes plus zero) 41 42 43 44 45"
+
+--
+
+> Initial data     : 41 42 43 00 00 00 00 00 44 45
+> Framed message   : E3 41 42 43 D3 03 44 45 00
+> Decoded data     : 41 42 43 00 00 00 00 00 44 45
+
+Here the data contains a run of zeroes in the middle.
+"41 42 43 00 00" encodes as "E3 (three data bytes plus two zeroes) 41 42 43"
+"00 00 00" encodes as "D3 (run of three zeroes)"
+"44 45 [phantom zero]" encodes as "03 (two data bytes plus zero) 44 45"
+
+--
+
+> Pipeline encoding, one byte at a time, sending whenever possible.
+> 
+> Initial data     : 41 42 43 44 45
+> Partial          : 02 41
+> Partial          : 03 41 42
+> Partial          : 04 41 42 43
+> Partial          : 05 41 42 43 44
+> Partial          : 06 41 42 43 44 45
+> Transmit   7     : 06 41 42 43 44 45 00
+
+Here the output is built up incrementally.
+Note how the initial code byte increments as more bytes are added.
+At the end seven bytes (six data plus framing marker) are transmitted.
+
+--
+
+> Initial data     : 41 42 43 44 45 00
+> Partial          : 02 41
+> Partial          : 03 41 42
+> Partial          : 04 41 42 43
+> Partial          : 05 41 42 43 44
+> Partial          : 06 41 42 43 44 45
+> Partial          : E5 41 42 43 44 45
+> Transmit   7     : E5 41 42 43 44 45 00
+
+Again the output is built up incrementally.
+Again the initial code byte increments as more bytes are added.
+When the final zero is added, code 06 (five data bytes plus zero) changes
+to E5 (five data bytes plus two zeroes)
+At the end seven bytes (six data plus framing marker) are transmitted.
+
+--
+
+> Initial data     : 41 42 43 00 44 45
+> Partial          : 02 41
+> Partial          : 03 41 42
+> Partial          : 04 41 42 43
+> Partial          : E3 41 42 43
+> Partial          : 04 41 42 43 02 44
+> Transmit   4     : 04 41 42 43
+> Partial          : 02 44
+> Partial          : 03 44 45
+> Transmit   4     : 03 44 45 00
+
+Here the data has a zero in the middle.
+After the "44" is added to the output, it becomes clear that the block
+"04 41 42 43" is complete and will not change any more; hence it can be
+transmitted immediately. At the end the remaining four bytes (three data
+plus framing marker) are transmitted.
+
+--
+
+> Initial data     : 00 41 42 43 44 45
+> Partial          : E0
+> Partial          : 01 02 41
+> Transmit   1     : 01
+> Partial          : 02 41
+> Partial          : 03 41 42
+> Partial          : 04 41 42 43
+> Partial          : 05 41 42 43 44
+> Partial          : 06 41 42 43 44 45
+> Transmit   7     : 06 41 42 43 44 45 00
+
+Here the data begins with a zero.
+Initially this is encoded as "E0 (two zeroes)" in the hope that the next
+byte might be a zero. After the "41" is added to the output, it becomes
+clear that this is not the case, so "01" can then be transmitted immediately.
+At the end the remaining seven bytes (six data plus framing marker) are
+transmitted.
+
+--
+
+> Initial data     : 41 42 43 00 00 00 00 00 44 45
+> Partial          : 02 41
+> Partial          : 03 41 42
+> Partial          : 04 41 42 43
+> Partial          : E3 41 42 43
+> Partial          : E3 41 42 43 01
+> Transmit   4     : E3 41 42 43
+> Partial          : 01
+> Partial          : E0
+> Partial          : D3
+> Partial          : D4
+> Partial          : D3 02 44
+> Transmit   1     : D3
+> Partial          : 02 44
+> Partial          : 03 44 45
+> Transmit   4     : 03 44 45 00
+
+Here the data contains a run of zeroes.
+"41 42 43 00 00" is encoded as
+"E3 (three data bytes plus two zeroes) 41 42 43" and transmitted.
+As more zeroes are added, the code evolves from
+"01 (lone zero)" to
+"E0 (two zeroes)" to
+"D3 (three zeroes)" to
+"D4 (four zeroes)".
+At each stage the encoding is optimistically assuming that the next byte
+will be another zero. When "44" is encountered, this optimistic assumption
+is found to be false, so code "D4 (four zeroes)" reverts to "D3 (three zeroes)"
+and is transmitted.
+The final "44 45 [phantom zero]" are encoded as
+"03 (two data bytes plus zero) 44 45" and transmitted.
+
+--
+
+> Pipeline decoding, reading just one source byte at a time.
+> 
+> Initial data     : 41 42 43 44 45
+> Framed message   : 06 41 42 43 44 45 00
+> Read 06; Output  : 
+> Read 41; Output  : 41
+> Read 42; Output  : 42
+> Read 43; Output  : 43
+> Read 44; Output  : 44
+> Read 45; Output  : 45
+> Read 00; Output  : 
+
+Here code "06 (five data bytes plus zero)" is read.
+This sets up the state machine, but generates no immediate output.
+The next five bytes each generate immediate output.
+The final 00 framing marker sets the EOM flag to mark the end of the message.
+
+--
+
+> Initial data     : 41 42 43 44 45 00
+> Framed message   : E5 41 42 43 44 45 00
+> Read E5; Output  : 
+> Read 41; Output  : 41
+> Read 42; Output  : 42
+> Read 43; Output  : 43
+> Read 44; Output  : 44
+> Read 45; Output  : 45 00
+> Read 00; Output  : 
+
+Here code "E5 (five data bytes plus two zeroes)" is read.
+This sets up the state machine, but generates no immediate output.
+The next four bytes each generate immediate output.
+The fifth byte outputs the data plus one zero; the second zero
+is held while we wait to see if it is a phantom zero.
+The final 00 framing marker tells us that our last zero
+was indeed a phantom zero; this is the end of the message.
+
+--
+
+> Initial data     : 41 42 43 00 44 45
+> Framed message   : 04 41 42 43 03 44 45 00
+> Read 04; Output  : 
+> Read 41; Output  : 41
+> Read 42; Output  : 42
+> Read 43; Output  : 43
+> Read 03; Output  : 00
+> Read 44; Output  : 44
+> Read 45; Output  : 45
+> Read 00; Output  : 
+
+Here code "04 (three data bytes plus zero)" is read.
+This sets up the state machine, but generates no immediate output.
+The next three bytes each generate immediate output.
+The trailing zero is not output until we know if we're at the end of the
+message.
+The next byte is "03 (two data bytes plus zero)"; we're not at the end
+of the message, so the zero is output.
+The next two bytes each generate immediate output,
+and then we reach the framing marker.
+
+--
+
+> Initial data     : 00 41 42 43 44 45
+> Framed message   : 01 06 41 42 43 44 45 00
+> Read 01; Output  : 
+> Read 06; Output  : 00
+> Read 41; Output  : 41
+> Read 42; Output  : 42
+> Read 43; Output  : 43
+> Read 44; Output  : 44
+> Read 45; Output  : 45
+> Read 00; Output  : 
+
+Here code "01 (lone zero)" is read. Is it a phantom zero?
+Next we read "06 (five data bytes plus zero)"
+We're not at the end of the message, so we can output our pending zero.
+The next five bytes each generate immediate output.
+The final 00 framing marker sets the EOM flag to mark the end of the message.
+
+--
+
+> Initial data     : 41 42 43 00 00 00 00 00 44 45
+> Framed message   : E3 41 42 43 D3 03 44 45 00
+> Read E3; Output  : 
+> Read 41; Output  : 41
+> Read 42; Output  : 42
+> Read 43; Output  : 43 00
+> Read D3; Output  : 00 00 00
+> Read 03; Output  : 00
+> Read 44; Output  : 44
+> Read 45; Output  : 45
+> Read 00; Output  : 
+
+Here code "E3 (three data bytes plus two zeroes)" is read.
+This sets up the state machine, but generates no immediate output.
+The next two bytes each generate immediate output.
+The third byte "43" generates immediate output plus one zero;
+the second zero is held while we wait to see if it's phantom.
+The next code is "D3 (three zeroes)". We output our held zero, plus two
+of these three, and hold the last one while we wait to see if it's phantom.
+The next code is "03 (two data bytes plus zero)".
+Now we know our held zero is not phantom, so we output it.
+The next two bytes each generate immediate output,
+and then we reach the framing marker.
+
+--
+
+> Pipeline decoding, extracting just one output byte at a time.
+> 
+> Initial data     : 41 42 43 44 45
+> Framed message   : 06 41 42 43 44 45 00
+> Read 06 41 Output: 41
+> Read    42 Output: 42
+> Read    43 Output: 43
+> Read    44 Output: 44
+> Read 45 00 Output: 45
+
+Our first request to extract one byte consumes two bytes
+of input, a code byte and one data byte.
+Subsequent requests to extract bytes consume one byte each,
+until we reach the framing marker and set the EOM flag.
+
+--
+
+> Initial data     : 41 42 43 44 45 00
+> Framed message   : E5 41 42 43 44 45 00
+> Read E5 41 Output: 41
+> Read    42 Output: 42
+> Read    43 Output: 43
+> Read    44 Output: 44
+> Read    45 Output: 45
+> Read    00 Output: 00
+
+Our first request to extract one byte consumes two bytes
+of input, a code byte and one data byte.
+The state machine is now set for a run of five data bytes with
+two zeroes at the end, one of them possibly phantom.
+Subsequent requests to extract bytes consume one byte each,
+until we reach the framing marker, output one zero (the second zero
+was phantom) and set the EOM flag.
+
+--
+
+> Initial data     : 41 42 43 00 44 45
+> Framed message   : 04 41 42 43 03 44 45 00
+> Read 04 41 Output: 41
+> Read    42 Output: 42
+> Read    43 Output: 43
+> Read    03 Output: 00
+> Read    44 Output: 44
+> Read 45 00 Output: 45
+
+Our first request to extract one byte consumes two bytes
+of input, a code byte and one data byte.
+The state machine is now set for a run of three data bytes and
+one zero at the end, possibly phantom.
+The next two requests consume one byte each.
+The next request finds that we're not at the end, so our
+zero is not phantom, so we output it.
+The state machine is now set for a run of two data bytes and
+one zero at the end, possibly phantom.
+The next request consumes one byte.
+The last request consumes two bytes, finds the framing marker, concludes
+that the last zero is phantom, doesn't output it, and sets the EOM flag.
+
+--
+
+> Initial data     : 00 41 42 43 44 45
+> Framed message   : 01 06 41 42 43 44 45 00
+> Read 01 06 Output: 00
+> Read    41 Output: 41
+> Read    42 Output: 42
+> Read    43 Output: 43
+> Read    44 Output: 44
+> Read 45 00 Output: 45
+
+Our first request to extract one byte reads "01 (lone zero)", outputs the
+indicated zero, then reads "06 (five data bytes plus zero)" and sets the
+state machine for five data bytes plus a (possibly phantom) zero.
+Subsequent requests to extract bytes consume one byte each,
+until we reach the framing marker and set the EOM flag.
+
+--
+
+> Initial data     : 41 42 43 00 00 00 00 00 44 45
+> Framed message   : E3 41 42 43 D3 03 44 45 00
+> Read E3 41 Output: 41
+> Read    42 Output: 42
+> Read    43 Output: 43
+> Read       Output: 00
+> Read    D3 Output: 00
+> Read       Output: 00
+> Read       Output: 00
+> Read    03 Output: 00
+> Read    44 Output: 44
+> Read 45 00 Output: 45
+
+Our first request to extract one byte consumes two bytes
+of input, a code byte and one data byte.
+The state machine is now set for a run of three data bytes with
+two zeroes at the end, one of them possibly phantom.
+After extracting the two zero bytes, code "D3" generates three
+more, then code "03" generates two data bytes and the final phantom
+zero is, as usual, suppressed.
+
+--
+
+If you're not convinced by now that the encoder and decoder work correctly,
+go ahead and write some more test cases :-)
+
+Stuart Cheshire
